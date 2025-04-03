@@ -1,0 +1,6 @@
+Flask==3.1.0
+flask-cors==5.0.1
+google-genai==1.8.0
+lxml-html-clean==0.4.1
+newspaper3k==0.2.8
+python-dotenv==1.1.0
