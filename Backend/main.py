@@ -40,7 +40,7 @@ model.eval()
 label_map = {0: "Positive", 1: "Negative"}
 
 scaler = joblib.load("model/scaler.pkl")
-model = joblib.load("model/price_predictor.pkl")
+predictor = joblib.load("model/price_predictor.pkl")
 
 is_cmc_avail = False
 
@@ -60,7 +60,7 @@ if response.status_code == 200:
     name_to_symbol = {}
 
     for crypto in data["data"]:
-        name = crypto["name"]
+        name = crypto["name"].lower()
         symbol = crypto["symbol"]
         name_to_symbol[name] = symbol
 
@@ -81,21 +81,82 @@ def predict_sentiment(text):
     return predicted_class
 
 
-def scrape_coinmarketcap(coin: str) -> dict:
-    coin = coin.strip().replace("\n", "").replace("'", "").replace('"', "")
-    print(f"Scraping CoinMarketCap: {coin}")
-    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/latest?symbol={coin}&CMC_PRO_API_KEY={os.getenv('CMC_API_KEY')}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        return data["data"][coin]
-    else:
-        print("Failed to fetch data from CoinMarketCap")
-        print(response.status_code)
-        return "Could not scrape CoinMarketCap"
+def scrape_coinmarketcap(coin):
+    requests_params = {
+        "symbol": name_to_symbol[coin],
+        "CMC_PRO_API_KEY": os.getenv("CMC_API_KEY"),
+    }
+    headers = {
+        "Accepts": "application/json",
+    }
+    response = requests.get(
+        "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map",
+        headers=headers,
+        params=requests_params,
+    )
+    response.raise_for_status()
+    id = response.json()["data"][0]["id"]
+    url = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/historical"
+    requests_params = {
+        "id": id,
+        "interval": "1d",
+        "count": 365,
+        "CMC_PRO_API_KEY": os.getenv("CMC_API_KEY"),
+    }
+    response = requests.get(url, headers=headers, params=requests_params)
+    response.raise_for_status()
+    data = response.json()["data"][str(id)]["quotes"]
+    extracted_data = []
+    for entry in data:
+        timestamp = entry["timestamp"]
+        quote = entry["quote"]["USD"]
+        extracted_data.append(
+            {
+                "timestamp": timestamp,
+                "price": quote.get("price", np.nan),
+                "Volume_24h": quote.get("volume_24h", np.nan),
+                "Market_Cap": quote.get("market_cap", np.nan),
+                "Percent_Change_1h": quote.get("percent_change_1h", np.nan),
+                "Percent_Change_24h": quote.get("percent_change_24h", np.nan),
+                "Percent_Change_7d": quote.get("percent_change_7d", np.nan),
+                "Percent_Change_30d": quote.get("percent_change_30d", np.nan),
+            }
+        )
+    df = pd.DataFrame(extracted_data)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df.set_index("timestamp", inplace=True)
+
+    data_length = len(df)
+    sma_window = min(20, data_length - 1) if data_length > 1 else 1
+    sma_window_large = min(50, data_length - 1) if data_length > 1 else 1
+    rsi_window = min(14, data_length - 1) if data_length > 1 else 1
+
+    df["SMA_20"] = df["price"].rolling(window=sma_window).mean()
+    df["SMA_50"] = df["price"].rolling(window=sma_window_large).mean()
+    df["EMA_20"] = EMAIndicator(df["price"], window=sma_window).ema_indicator()
+    df["EMA_50"] = EMAIndicator(df["price"], window=sma_window_large).ema_indicator()
+    df["RSI"] = RSIIndicator(df["price"], window=rsi_window).rsi()
+    macd = MACD(
+        df["price"],
+        window_slow=min(26, data_length - 1) if data_length > 1 else 1,
+        window_fast=min(12, data_length - 1) if data_length > 1 else 1,
+        window_sign=min(9, data_length - 1) if data_length > 1 else 1,
+    )
+    df["MACD"] = macd.macd()
+    df["MACD_Signal"] = macd.macd_signal()
+
+    if df["Volume_24h"].isna().any():
+        df["Volume_24h"] = df["Volume_24h"].fillna(0)
+
+    obv = OnBalanceVolumeIndicator(close=df["price"], volume=df["Volume_24h"])
+    df["OBV"] = obv.on_balance_volume()
+
+    df.dropna(inplace=True)
+    df.reset_index(inplace=True)
+    return json.dumps(df.to_dict(orient="index"), default=str)
 
 
-def scrape_yt(url: str) -> dict:
+def scrape_yt(url):
     url = url.strip().replace("'", "").replace('"', "").replace("\n", "")
     print(f"Scraping YouTube: {url}")
 
@@ -182,10 +243,10 @@ def scrape_yt(url: str) -> dict:
         return output
 
 
-def scrape_reddit(subreddit: str) -> dict:
+def scrape_reddit(subreddit):
     subreddit = subreddit.strip().replace("\n", "").replace("'", "").replace('"', "")
     print(f"Scraping Subreddit: {subreddit}")
-    url = f"https://www.reddit.com/r/{subreddit}/best/.json"
+    url = f"https://www.reddit.com/r/{subreddit}/rising/.json"
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
@@ -266,7 +327,7 @@ def scrape_reddit(subreddit: str) -> dict:
     return output
 
 
-def search_youtube(search_query: str) -> dict:
+def search_youtube(search_query):
     search_query = (
         search_query.strip().replace("\n", "").replace("'", "").replace('"', "")
     )
@@ -298,10 +359,10 @@ def search_youtube(search_query: str) -> dict:
 
             return top_videos
     except Exception as e:
-        return {"error": str(e)}
+        return {"error"(e)}
 
 
-def getArticles(search_query: str) -> dict:
+def getArticles(search_query):
     url = f"https://serpapi.com/search?engine=google_news&q={search_query}&api_key={os.getenv('SERP_API_KEY')}"
     response = requests.get(url)
 
@@ -356,161 +417,7 @@ def getArticles(search_query: str) -> dict:
     return results
 
 
-yt_cache = {}
-reddit_cache = {}
-articles_cache = {}
-coinmarketcap_cache = {}
-summary_cache = {}
-
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"message": "Welcome to the DeepCoin API"})
-
-
-@app.route("/v1/scrapeYoutube", methods=["POST"])
-def scrapeYoutube():
-    coin = request.json["coin"]
-
-    if coin in yt_cache:
-        print(f"Returning cached data for {coin}")
-        return jsonify(yt_cache[coin])
-
-    search_query = coin + " latest news"
-    videos = search_youtube(search_query=search_query)
-
-    for key, video in videos.items():
-        try:
-            link = video.get("url")
-            if link.startswith("https://www.youtube.com/shorts") or not link:
-                continue
-            scraped_data = scrape_yt(link)
-            video.update(scraped_data)
-        except Exception as e:
-            print(f"Error scraping video {link}: {e}")
-            video["scrape_error"] = str(e)
-
-    yt_cache[coin] = videos
-
-    return jsonify(videos)
-
-
-@app.route("/v1/scrapeReddit", methods=["POST"])
-def scrapeReddit():
-    coin = request.json.get("coin")
-
-    if coin in reddit_cache:
-        print(f"Returning cached data for {coin}")
-        return json.dumps(reddit_cache[coin])
-
-    try:
-        posts = scrape_reddit(coin)
-        reddit_cache[coin] = posts
-        return json.dumps(posts)
-    except Exception as e:
-        print(f"Error scraping Reddit for {coin}: {e}")
-        return jsonify({"error": "Failed to scrape Reddit"}), 500
-
-
-@app.route("/v1/scrapeArticles", methods=["POST"])
-def scrapeArticles():
-    coin = request.json.get("coin")
-
-    if coin in articles_cache:
-        print(f"Returning cached data for {coin}")
-        return jsonify(articles_cache[coin])
-
-    try:
-        data = getArticles(coin)
-        articles_cache[coin] = data
-        return jsonify(data)
-    except Exception as e:
-        print(f"Error fetching coin analysis for {coin}: {e}")
-        return jsonify({"error": "Failed to fetch coin analysis"}), 500
-
-
-@app.route("/v1/scrapeCoinMarketCap", methods=["POST"])
-def scrapeCoinMarketCap():
-    coin = request.json.get("coin")
-
-    requests_params = {
-        "symbol": name_to_symbol[coin],
-        "CMC_PRO_API_KEY": os.getenv("CMC_API_KEY"),
-    }
-    headers = {
-        "Accepts": "application/json",
-    }
-    response = requests.get(
-        "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map",
-        headers=headers,
-        params=requests_params,
-    )
-    response.raise_for_status()
-    id = response.json()["data"][0]["id"]
-    url = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/historical"
-    requests_params = {
-        "id": id,
-        "interval": "1d",
-        "count": 365,
-        "CMC_PRO_API_KEY": os.getenv("CMC_API_KEY"),
-    }
-    response = requests.get(url, headers=headers, params=requests_params)
-    response.raise_for_status()
-    data = response.json()["data"][str(id)]["quotes"]
-    extracted_data = []
-    for entry in data:
-        timestamp = entry["timestamp"]
-        quote = entry["quote"]["USD"]
-        extracted_data.append(
-            {
-                "timestamp": timestamp,
-                "price": quote.get("price", np.nan),
-                "Volume_24h": quote.get("volume_24h", np.nan),
-                "Market_Cap": quote.get("market_cap", np.nan),
-                "Percent_Change_1h": quote.get("percent_change_1h", np.nan),
-                "Percent_Change_24h": quote.get("percent_change_24h", np.nan),
-                "Percent_Change_7d": quote.get("percent_change_7d", np.nan),
-                "Percent_Change_30d": quote.get("percent_change_30d", np.nan),
-            }
-        )
-    df = pd.DataFrame(extracted_data)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df.set_index("timestamp", inplace=True)
-
-    data_length = len(df)
-    sma_window = min(20, data_length - 1) if data_length > 1 else 1
-    sma_window_large = min(50, data_length - 1) if data_length > 1 else 1
-    rsi_window = min(14, data_length - 1) if data_length > 1 else 1
-
-    df["SMA_20"] = df["price"].rolling(window=sma_window).mean()
-    df["SMA_50"] = df["price"].rolling(window=sma_window_large).mean()
-    df["EMA_20"] = EMAIndicator(df["price"], window=sma_window).ema_indicator()
-    df["EMA_50"] = EMAIndicator(df["price"], window=sma_window_large).ema_indicator()
-    df["RSI"] = RSIIndicator(df["price"], window=rsi_window).rsi()
-    macd = MACD(
-        df["price"],
-        window_slow=min(26, data_length - 1) if data_length > 1 else 1,
-        window_fast=min(12, data_length - 1) if data_length > 1 else 1,
-        window_sign=min(9, data_length - 1) if data_length > 1 else 1,
-    )
-    df["MACD"] = macd.macd()
-    df["MACD_Signal"] = macd.macd_signal()
-
-    if df["Volume_24h"].isna().any():
-        df["Volume_24h"] = df["Volume_24h"].fillna(0)
-
-    obv = OnBalanceVolumeIndicator(close=df["price"], volume=df["Volume_24h"])
-    df["OBV"] = obv.on_balance_volume()
-
-    df.dropna(inplace=True)
-    df.reset_index(inplace=True)
-    return json.dumps(df.to_dict(orient="index"), default=str)
-
-
-@app.route("/v1/predictPrice", methods=["POST"])
-def predictPrice():
-    coin = request.json.get("coin").lower()
-
+def price_predictor(coin):
     base_url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart/range"
     end_date = dt.datetime.today()
     dfs = []
@@ -555,7 +462,7 @@ def predictPrice():
     forecasted_prices = []
     for _ in range(7):
         input_reshaped = np.reshape(input_seq, (1, input_seq.shape[0], 1))
-        next_price_scaled = model.predict(input_reshaped, verbose=0)
+        next_price_scaled = predictor.predict(input_reshaped, verbose=0)
         forecasted_prices.append(next_price_scaled[0])
         input_seq = np.append(input_seq, next_price_scaled)[-60:]
 
@@ -575,9 +482,120 @@ def predictPrice():
     return plot_df.to_json(date_format="iso", orient="records")
 
 
+yt_cache = {}
+reddit_cache = {}
+articles_cache = {}
+coinmarketcap_cache = {}
+priceprediction_cache = {}
+summary_cache = {}
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Welcome to the DeepCoin API"})
+
+
+@app.route("/v1/scrapeYoutube", methods=["POST"])
+def scrapeYoutube():
+    coin = request.json["coin"].lower()
+
+    if coin in yt_cache:
+        print(f"Returning cached data for {coin}")
+        return jsonify(yt_cache[coin])
+
+    search_query = coin + " latest news"
+    videos = search_youtube(search_query=search_query)
+
+    for key, video in videos.items():
+        try:
+            link = video.get("url")
+            if link.startswith("https://www.youtube.com/shorts") or not link:
+                continue
+            scraped_data = scrape_yt(link)
+            video.update(scraped_data)
+        except Exception as e:
+            print(f"Error scraping video {link}: {e}")
+            video["scrape_error"] = str(e)
+
+    yt_cache[coin] = videos
+
+    return jsonify(videos)
+
+
+@app.route("/v1/scrapeReddit", methods=["POST"])
+def scrapeReddit():
+    coin = request.json["coin"].lower()
+
+    if coin in reddit_cache:
+        print(f"Returning cached data for {coin}")
+        return json.dumps(reddit_cache[coin])
+
+    try:
+        posts = scrape_reddit(coin)
+        reddit_cache[coin] = posts
+        return json.dumps(posts)
+    except Exception as e:
+        print(f"Error scraping Reddit for {coin}: {e}")
+        return jsonify({"error": "Failed to scrape Reddit"}), 500
+
+
+@app.route("/v1/scrapeArticles", methods=["POST"])
+def scrapeArticles():
+    coin = request.json["coin"].lower()
+
+    if coin in articles_cache:
+        print(f"Returning cached data for {coin}")
+        return jsonify(articles_cache[coin])
+
+    try:
+        data = getArticles(coin)
+        articles_cache[coin] = data
+        return jsonify(data)
+    except Exception as e:
+        print(f"Error fetching coin analysis for {coin}: {e}")
+        return jsonify({"error": "Failed to fetch coin analysis"}), 500
+
+
+@app.route("/v1/scrapeCoinMarketCap", methods=["POST"])
+def scrapeCoinMarketCap():
+    coin = request.json["coin"].lower()
+
+    if coin in coinmarketcap_cache:
+        print(f"Returning cached data for {coin}")
+        return coinmarketcap_cache[coin]
+
+    try:
+        data = scrape_coinmarketcap(coin)
+        coinmarketcap_cache[coin] = data
+        return data
+    except Exception as e:
+        print(f"Error scraping CoinMarketCap for {coin}: {e}")
+        return jsonify({"error": "Failed to scrape CoinMarketCap"}), 500
+
+
+@app.route("/v1/predictPrice", methods=["POST"])
+def predictPrice():
+    coin = request.json["coin"].lower().lower()
+
+    if coin in priceprediction_cache:
+        print(f"Returning cached data for {coin}")
+        return priceprediction_cache[coin]
+
+    try:
+        data = price_predictor(coin)
+        priceprediction_cache[coin] = data
+        return data
+    except Exception as e:
+        print(f"Error predicting price for {coin}: {e}")
+        return jsonify({"error": "Failed to predict price"}), 500
+
+
 @app.route("/v1/analyzeCoin", methods=["POST"])
 def analyzeCoin():
-    coin = request.json.get("coin")
+    coin = request.json["coin"].lower()
+
+    last_7_days_cmc = {}
+    last_7_days_pred = {}
 
     if coin in summary_cache:
         print(f"Returning cached data for {coin}")
@@ -590,6 +608,12 @@ def analyzeCoin():
         else:
             coinmarketcap_data = scrape_coinmarketcap(coin)
             coinmarketcap_cache[coin] = coinmarketcap_data
+        coinmarketcap_data = json.loads(coinmarketcap_data)
+        last_7_days_cmc = {
+            str(i): data
+            for i, data in enumerate(coinmarketcap_data.values())
+            if i >= len(coinmarketcap_data) - 7
+        }
     except Exception as e:
         print(f"Error scraping CoinMarketCap for {coin}")
         coinmarketcap_data = {"error": "Failed to scrape CoinMarketCap"}
@@ -639,12 +663,31 @@ def analyzeCoin():
         print(f"Error searching YouTube for {coin}")
         youtube_data = {"error": "Failed to search YouTube"}
 
+    try:
+        if coin in priceprediction_cache:
+            print(f"Returning cached data for {coin}")
+            price_data = priceprediction_cache[coin]
+        else:
+            price_data = price_predictor(coin)
+            priceprediction_cache[coin] = price_data
+        price_data = json.loads(price_data)
+        last_7_days_pred = {
+            str(i): data
+            for i, data in enumerate(price_data)
+            if i >= len(price_data) - 7
+        }
+    except Exception as e:
+        print(f"Error predicting price for {coin}")
+        price_data = {"error": "Failed to predict price"}
+
     prompt = f"""
     You are an expert crypto analyst. Given the following data, analyze the coin and provide a summary of the current state of the coin, its potential future, and any other relevant insights.
-    Output the analysis as a plain text. And give only the analysis, no other text or any other line, start from the analysis. You can using full markdown.
+    Output the analysis as a plain text. And give only the analysis, no other text or any other line, don't start with based on the given data, start from the analysis. You can using full markdown.
     Reddit Data: {reddit_data}
     Articles Data: {articles_data}
     YouTube Data: {youtube_data}
+    7 Days CoinMarketCap Data: {last_7_days_cmc}
+    Next 7 Days Price Prediction: {last_7_days_pred}
     """
     response = geminiClient.models.generate_content(
         model="gemini-2.0-flash", contents=prompt
