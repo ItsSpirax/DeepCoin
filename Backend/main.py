@@ -359,7 +359,11 @@ def search_youtube(search_query):
 
             return top_videos
     except Exception as e:
-        return {"error"(e)}
+        print(f"Error searching YouTube: {e}")
+        return {
+            "error": "Failed to search YouTube",
+            "message": str(e),
+        }
 
 
 def getArticles(search_query):
@@ -682,11 +686,11 @@ def analyzeCoin():
 
     prompt = f"""
     You are an expert crypto analyst. Given the following data, analyze the coin and provide a summary of the current state of the coin, its potential future, and any other relevant insights.
-    Output the analysis as a plain text. And give only the analysis, no other text or any other line, don't start with based on the given data, start from the analysis. You can using full markdown.
+    Output the analysis as a plain text. And give only the analysis, no other text or any other line, start from the analysis. You can using full markdown.
     Reddit Data: {reddit_data}
     Articles Data: {articles_data}
     YouTube Data: {youtube_data}
-    7 Days CoinMarketCap Data: {last_7_days_cmc}
+    Last 7 Days Cryptocurrency Data: {last_7_days_cmc}
     Next 7 Days Price Prediction: {last_7_days_pred}
     """
     response = geminiClient.models.generate_content(
