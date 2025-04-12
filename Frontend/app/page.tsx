@@ -4,13 +4,43 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import React from "react";
 import Markdown from "react-markdown";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  BarElement,
+} from "chart.js";
+import { Line, Bar } from "react-chartjs-2";
 
-type TabType = "Summary" | "Youtube" | "Reddit" | "Articles" | "CoinMarketCap";
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+);
+
+type TabType =
+  | "Summary"
+  | "Youtube"
+  | "Reddit"
+  | "Articles"
+  | "Technical Indicators"
+  | "Prediction";
 type YoutubeData = Record<string, unknown>;
 type RedditData = Record<string, unknown>;
 type ArticlesData = Record<string, unknown>;
 type SummaryData = Record<string, unknown>;
-type CoinMarketCapData = Record<string, unknown>;
+type TechnicalIndicatorsData = Record<string, any>;
+type PredictionData = Array<{ date: string; price: number }>;
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>("Summary");
@@ -24,22 +54,27 @@ export default function Home() {
     Youtube: false,
     Reddit: false,
     Articles: false,
-    CoinMarketCap: false,
+    "Technical Indicators": false,
+    Prediction: false,
   });
 
   const [youtubeData, setYoutubeData] = useState<YoutubeData | null>(null);
   const [redditData, setRedditData] = useState<RedditData | null>(null);
   const [articlesData, setArticlesData] = useState<ArticlesData | null>(null);
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
-  const [coinMarketData, setCoinMarketData] =
-    useState<CoinMarketCapData | null>(null);
+  const [technicalData, setTechnicalData] =
+    useState<TechnicalIndicatorsData | null>(null);
+  const [predictionData, setPredictionData] = useState<PredictionData | null>(
+    null,
+  );
 
   const [errors, setErrors] = useState({
     Summary: null as string | null,
     Youtube: null as string | null,
     Reddit: null as string | null,
     Articles: null as string | null,
-    CoinMarketCap: null as string | null,
+    "Technical Indicators": null as string | null,
+    Prediction: null as string | null,
   });
 
   const [redditSentiment, setRedditSentiment] = useState<number | null>(null);
@@ -66,12 +101,12 @@ export default function Home() {
         case "Summary":
           endpoint = "http://127.0.0.1:8000/v1/analyzeCoin";
           break;
-        default:
-          setCoinMarketData({
-            message: `${tab} data fetch not implemented yet.`,
-          });
-          setLoadingStates((prev) => ({ ...prev, [tab]: false }));
-          return;
+        case "Technical Indicators":
+          endpoint = "http://127.0.0.1:8000/v1/scrapeCoinMarketCap";
+          break;
+        case "Prediction":
+          endpoint = "http://127.0.0.1:8000/v1/predictPrice";
+          break;
       }
 
       const response = await fetch(endpoint, {
@@ -108,8 +143,11 @@ export default function Home() {
         case "Summary":
           setSummaryData({ analysis: result.analysis });
           break;
-        case "CoinMarketCap":
-          setCoinMarketData(result);
+        case "Technical Indicators":
+          setTechnicalData(result);
+          break;
+        case "Prediction":
+          setPredictionData(result);
           break;
       }
 
@@ -359,7 +397,7 @@ export default function Home() {
                       viewBox="0 0 24 24"
                       xmlns="http://www.w3.org/2000/svg"
                     >
-                      <path d="M12 2L8.66 9.34l-8.33 1.21 6.04 5.89-1.42 8.3L12 20.48l7.05 4.26-1.42-8.3 6.04-5.89-8.33-1.21z"></path>
+                      <path d="M12 4l1.4 1.4L7.8 11H20v2H7.8l5.6 5.6L12 20l-8-8 8-8z"></path>
                     </svg>
                     <span className="ml-1 text-sm font-medium text-gray-300">
                       {(item.upvote_ratio * 100).toFixed(0)}%
@@ -764,9 +802,10 @@ export default function Home() {
     );
   };
 
-  const CoinMarketCapContent = () => {
-    const isLoading = loadingStates.CoinMarketCap;
-    const error = errors.CoinMarketCap;
+  const TechnicalIndicatorsContent = () => {
+    const data = technicalData;
+    const isLoading = loadingStates["Technical Indicators"];
+    const error = errors["Technical Indicators"];
 
     if (isLoading) {
       return <LoadingDisplay coin={currentCoin} />;
@@ -776,33 +815,859 @@ export default function Home() {
       return <ErrorDisplay error={error} />;
     }
 
+    if (!data || Object.keys(data).length === 0) {
+      return <EmptyDisplay type="technical indicators" />;
+    }
+
+    const dataPoints = Object.values(data);
+
+    const sampleStep = Math.max(1, Math.floor(dataPoints.length / 30));
+    const sampledData = dataPoints.filter(
+      (_, index) => index % sampleStep === 0,
+    );
+
+    if (
+      dataPoints.length > 0 &&
+      sampledData.length > 0 &&
+      dataPoints[dataPoints.length - 1] !== sampledData[sampledData.length - 1]
+    ) {
+      sampledData.push(dataPoints[dataPoints.length - 1]);
+    }
+
+    const timestamps = sampledData.map((item) => {
+      const date = new Date(item.timestamp);
+      return date.toLocaleDateString();
+    });
+
+    const priceData = {
+      labels: timestamps,
+      datasets: [
+        {
+          label: "Price (USD)",
+          data: sampledData.map((item) => item.price),
+          borderColor: "rgb(75, 192, 192)",
+          backgroundColor: "rgba(75, 192, 192, 0.2)",
+          tension: 0.3,
+          fill: true,
+        },
+      ],
+    };
+
+    const technicalIndicatorsData = {
+      labels: timestamps,
+      datasets: [
+        {
+          label: "SMA 20",
+          data: sampledData.map((item) => item.SMA_20),
+          borderColor: "rgb(255, 99, 132)",
+          backgroundColor: "rgba(255, 99, 132, 0.2)",
+          tension: 0.3,
+          fill: false,
+          borderWidth: 2,
+        },
+        {
+          label: "SMA 50",
+          data: sampledData.map((item) => item.SMA_50),
+          borderColor: "rgb(54, 162, 235)",
+          backgroundColor: "rgba(54, 162, 235, 0.2)",
+          tension: 0.3,
+          fill: false,
+          borderWidth: 2,
+        },
+        {
+          label: "EMA 20",
+          data: sampledData.map((item) => item.EMA_20),
+          borderColor: "rgb(255, 159, 64)",
+          backgroundColor: "rgba(255, 159, 64, 0.2)",
+          tension: 0.3,
+          fill: false,
+          borderWidth: 1.5,
+          borderDash: [5, 5],
+        },
+        {
+          label: "EMA 50",
+          data: sampledData.map((item) => item.EMA_50),
+          borderColor: "rgb(153, 102, 255)",
+          backgroundColor: "rgba(153, 102, 255, 0.2)",
+          tension: 0.3,
+          fill: false,
+          borderWidth: 1.5,
+          borderDash: [5, 5],
+        },
+      ],
+    };
+
+    const rsiData = {
+      labels: timestamps,
+      datasets: [
+        {
+          label: "RSI",
+          data: sampledData.map((item) => item.RSI),
+          borderColor: "rgb(255, 99, 132)",
+          backgroundColor: "rgba(255, 99, 132, 0.2)",
+          tension: 0.3,
+          fill: true,
+          borderWidth: 2,
+        },
+      ],
+    };
+
+    const macdData = {
+      labels: timestamps,
+      datasets: [
+        {
+          label: "MACD",
+          data: sampledData.map((item) => item.MACD),
+          borderColor: "rgb(75, 192, 192)",
+          backgroundColor: "rgba(75, 192, 192, 0.2)",
+          type: "line",
+          tension: 0.3,
+          borderWidth: 2,
+        },
+        {
+          label: "MACD Signal",
+          data: sampledData.map((item) => item.MACD_Signal),
+          borderColor: "rgb(255, 99, 132)",
+          backgroundColor: "rgba(255, 99, 132, 0.2)",
+          type: "line",
+          tension: 0.3,
+          borderWidth: 2,
+        },
+      ],
+    };
+
+    const volumeData = {
+      labels: timestamps,
+      datasets: [
+        {
+          label: "Volume (24h)",
+          data: sampledData.map((item) => item.Volume_24h),
+          backgroundColor: "rgba(75, 192, 192, 0.6)",
+          borderColor: "rgba(75, 192, 192, 1)",
+          borderWidth: 1,
+        },
+      ],
+    };
+
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "top" as const,
+          labels: {
+            color: "white",
+            usePointStyle: true,
+            boxWidth: 6,
+          },
+        },
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          callbacks: {
+            label: function (context: any) {
+              let label = context.dataset.label || "";
+              if (label) {
+                label += ": ";
+              }
+              if (context.parsed.y !== null) {
+                label += new Intl.NumberFormat("en-US", {
+                  style: "currency",
+                  currency: "USD",
+                  minimumFractionDigits: 0,
+                  maximumFractionDigits: 2,
+                }).format(context.parsed.y);
+              }
+              return label;
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          ticks: {
+            color: "white",
+            callback: function (value: any) {
+              return value >= 1000
+                ? "$" + (value / 1000).toFixed(1) + "K"
+                : "$" + value;
+            },
+          },
+          grid: { color: "rgba(255, 255, 255, 0.1)" },
+        },
+        x: {
+          ticks: {
+            color: "white",
+            maxRotation: 45,
+            minRotation: 45,
+          },
+          grid: { color: "rgba(255, 255, 255, 0.1)" },
+        },
+      },
+      interaction: {
+        mode: "nearest",
+        axis: "x",
+        intersect: false,
+      },
+      elements: {
+        point: {
+          radius: 0,
+          hoverRadius: 5,
+        },
+        line: {
+          tension: 0.3,
+        },
+      },
+    };
+
+    const latestData = dataPoints[dataPoints.length - 1];
+
     return (
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
-        className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center"
+        className="space-y-8"
       >
-        <svg
-          className="w-16 h-16 mx-auto text-gray-600"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-          ></path>
-        </svg>
-        <h3 className="mt-4 text-xl font-medium text-gray-300">
-          CoinMarketCap Integration
-        </h3>
-        <p className="mt-2 text-gray-400">
-          Market data will be available soon!
-        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className="bg-gray-800/80 p-4 rounded-lg border border-gray-700/50">
+            <h3 className="text-gray-400 text-sm mb-1">Current Price</h3>
+            <p className="text-2xl font-bold text-green-400">
+              $
+              {latestData.price.toLocaleString("en-US", {
+                maximumFractionDigits: 2,
+              })}
+            </p>
+            <div
+              className={`text-sm mt-1 ${latestData.Percent_Change_24h > 0 ? "text-green-400" : "text-red-400"}`}
+            >
+              {latestData.Percent_Change_24h > 0 ? "▲" : "▼"}{" "}
+              {Math.abs(latestData.Percent_Change_24h).toFixed(2)}% (24h)
+            </div>
+          </div>
+          <div className="bg-gray-800/80 p-4 rounded-lg border border-gray-700/50">
+            <h3 className="text-gray-400 text-sm mb-1">Market Cap</h3>
+            <p className="text-2xl font-bold text-blue-400">
+              ${(latestData.Market_Cap / 1e9).toFixed(2)}B
+            </p>
+          </div>
+          <div className="bg-gray-800/80 p-4 rounded-lg border border-gray-700/50">
+            <h3 className="text-gray-400 text-sm mb-1">24h Volume</h3>
+            <p className="text-2xl font-bold text-purple-400">
+              ${(latestData.Volume_24h / 1e9).toFixed(2)}B
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Price History
+          </h3>
+          <div className="h-64">
+            <Line data={priceData} options={chartOptions} />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Moving Averages
+          </h3>
+          <div className="h-64">
+            <Line data={technicalIndicatorsData} options={chartOptions} />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            RSI (Relative Strength Index)
+          </h3>
+          <div className="h-64">
+            <Line
+              data={rsiData}
+              options={{
+                ...chartOptions,
+                plugins: {
+                  ...chartOptions.plugins,
+                  annotation: {
+                    annotations: {
+                      overboughtLine: {
+                        type: "line",
+                        yMin: 70,
+                        yMax: 70,
+                        borderColor: "rgb(255, 99, 132)",
+                        borderWidth: 1,
+                        label: {
+                          content: "Overbought (70)",
+                          enabled: true,
+                        },
+                      },
+                      oversoldLine: {
+                        type: "line",
+                        yMin: 30,
+                        yMax: 30,
+                        borderColor: "rgb(75, 192, 192)",
+                        borderWidth: 1,
+                        label: {
+                          content: "Oversold (30)",
+                          enabled: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              }}
+            />
+          </div>
+          <div className="mt-4 text-sm text-gray-400">
+            <p>
+              Current RSI:{" "}
+              <span
+                className={
+                  latestData.RSI > 70
+                    ? "text-red-400"
+                    : latestData.RSI < 30
+                      ? "text-green-400"
+                      : "text-gray-300"
+                }
+              >
+                {latestData.RSI.toFixed(2)}
+              </span>{" "}
+              {latestData.RSI > 70
+                ? "(Overbought)"
+                : latestData.RSI < 30
+                  ? "(Oversold)"
+                  : ""}
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">MACD</h3>
+          <div className="h-64">
+            <Line data={macdData} options={chartOptions} />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Volume (24h)
+          </h3>
+          <div className="h-64">
+            <Bar data={volumeData} options={chartOptions} />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Technical Indicators Overview
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs uppercase text-gray-400 border-b border-gray-700">
+                <tr>
+                  <th scope="col" className="py-3 px-4">
+                    Indicator
+                  </th>
+                  <th scope="col" className="py-3 px-4">
+                    Value
+                  </th>
+                  <th scope="col" className="py-3 px-4">
+                    Signal
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-gray-800">
+                  <td className="py-3 px-4">SMA (20)</td>
+                  <td className="py-3 px-4">
+                    $
+                    {latestData.SMA_20.toLocaleString("en-US", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.price > latestData.SMA_20
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }
+                    >
+                      {latestData.price > latestData.SMA_20
+                        ? "Bullish"
+                        : "Bearish"}
+                    </span>
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800">
+                  <td className="py-3 px-4">SMA (50)</td>
+                  <td className="py-3 px-4">
+                    $
+                    {latestData.SMA_50.toLocaleString("en-US", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.price > latestData.SMA_50
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }
+                    >
+                      {latestData.price > latestData.SMA_50
+                        ? "Bullish"
+                        : "Bearish"}
+                    </span>
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800">
+                  <td className="py-3 px-4">EMA (20)</td>
+                  <td className="py-3 px-4">
+                    $
+                    {latestData.EMA_20.toLocaleString("en-US", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.price > latestData.EMA_20
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }
+                    >
+                      {latestData.price > latestData.EMA_20
+                        ? "Bullish"
+                        : "Bearish"}
+                    </span>
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800">
+                  <td className="py-3 px-4">EMA (50)</td>
+                  <td className="py-3 px-4">
+                    $
+                    {latestData.EMA_50.toLocaleString("en-US", {
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.price > latestData.EMA_50
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }
+                    >
+                      {latestData.price > latestData.EMA_50
+                        ? "Bullish"
+                        : "Bearish"}
+                    </span>
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800">
+                  <td className="py-3 px-4">RSI (14)</td>
+                  <td className="py-3 px-4">{latestData.RSI.toFixed(2)}</td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.RSI > 70
+                          ? "text-red-400"
+                          : latestData.RSI < 30
+                            ? "text-green-400"
+                            : "text-gray-400"
+                      }
+                    >
+                      {latestData.RSI > 70
+                        ? "Overbought"
+                        : latestData.RSI < 30
+                          ? "Oversold"
+                          : "Neutral"}
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-3 px-4">MACD</td>
+                  <td className="py-3 px-4">{latestData.MACD.toFixed(2)}</td>
+                  <td className="py-3 px-4">
+                    <span
+                      className={
+                        latestData.MACD > latestData.MACD_Signal
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }
+                    >
+                      {latestData.MACD > latestData.MACD_Signal
+                        ? "Bullish"
+                        : "Bearish"}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </motion.div>
+    );
+  };
+
+  const PredictionContent = () => {
+    const data = predictionData;
+    const technicalHistoricalData = technicalData;
+    const isLoading = loadingStates["Prediction"];
+    const error = errors["Prediction"];
+
+    if (isLoading) {
+      return <LoadingDisplay coin={currentCoin} />;
+    }
+
+    if (error) {
+      return <ErrorDisplay error={error} />;
+    }
+
+    if (!data || data.length === 0) {
+      return <EmptyDisplay type="price predictions" />;
+    }
+
+    const historicalData = [];
+    if (
+      technicalHistoricalData &&
+      Object.keys(technicalHistoricalData).length > 0
+    ) {
+      const techData = Object.values(technicalHistoricalData);
+      const sampleStep = Math.max(1, Math.floor(techData.length / 30));
+
+      for (let i = 0; i < techData.length; i += sampleStep) {
+        const item = techData[i];
+        historicalData.push({
+          date: item.timestamp,
+          price: item.price,
+          isHistory: true,
+        });
+      }
+
+      const lastTechData = techData[techData.length - 1];
+      if (
+        historicalData.length > 0 &&
+        historicalData[historicalData.length - 1].date !==
+          lastTechData.timestamp
+      ) {
+        historicalData.push({
+          date: lastTechData.timestamp,
+          price: lastTechData.price,
+          isHistory: true,
+        });
+      }
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const combinedData = [
+      ...historicalData,
+      ...data.map((item) => ({
+        ...item,
+        isHistory: false,
+      })),
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    const predictionStartIndex = combinedData.findIndex(
+      (item) => !item.isHistory && new Date(item.date) > today,
+    );
+
+    const formattedData = {
+      labels: combinedData.map((item) => {
+        const date = new Date(item.date);
+        return date.toLocaleDateString();
+      }),
+      datasets: [
+        {
+          label: "Historical Price",
+          data: combinedData.map((item, index) => {
+            if (index < predictionStartIndex) return item.price;
+
+            if (index === predictionStartIndex) return item.price;
+            return null;
+          }),
+          borderColor: "rgb(75, 192, 192)",
+          backgroundColor: "rgba(75, 192, 192, 0.1)",
+          tension: 0.3,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+        },
+        {
+          label: "Predicted Price",
+          data: combinedData.map((item, index) => {
+            if (index === predictionStartIndex - 1)
+              return combinedData[predictionStartIndex - 1]?.price;
+            if (index >= predictionStartIndex) return item.price;
+            return null;
+          }),
+          borderColor: "rgb(255, 159, 64)",
+          backgroundColor: "rgba(255, 159, 64, 0.1)",
+          tension: 0.3,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+        },
+      ],
+    };
+
+    const chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "top" as const,
+          labels: {
+            color: "white",
+            usePointStyle: true,
+            boxWidth: 6,
+            padding: 20,
+            font: {
+              size: 12,
+            },
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label: function (context: any) {
+              const datasetLabel = context.dataset.label || "";
+              const value = context.parsed.y;
+              return `${datasetLabel}: $${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+            },
+            title: function (context: any) {
+              const date = new Date(context[0].label);
+              return date.toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              });
+            },
+          },
+          backgroundColor: "rgba(15, 23, 42, 0.9)",
+          bodyFont: {
+            size: 14,
+          },
+          padding: 12,
+          cornerRadius: 6,
+          boxPadding: 6,
+        },
+      },
+      scales: {
+        y: {
+          ticks: {
+            color: "white",
+            callback: function (value: any) {
+              return (
+                "$" +
+                value.toLocaleString("en-US", { maximumFractionDigits: 0 })
+              );
+            },
+            font: {
+              size: 11,
+            },
+          },
+          grid: { color: "rgba(255, 255, 255, 0.1)" },
+          border: { dash: [4, 4] },
+        },
+        x: {
+          ticks: {
+            color: "white",
+            maxRotation: 45,
+            minRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: 12,
+            font: {
+              size: 11,
+            },
+          },
+          grid: { color: "rgba(255, 255, 255, 0.1)" },
+          border: { dash: [4, 4] },
+        },
+      },
+      elements: {
+        point: {
+          radius: 0,
+          hoverRadius: 5,
+        },
+        line: {
+          tension: 0.4,
+        },
+      },
+      animation: {
+        duration: 1500,
+        easing: "easeOutQuart",
+      },
+    };
+
+    const latestHistoricalPrice = technicalHistoricalData
+      ? Object.values(technicalHistoricalData)[
+          Object.values(technicalHistoricalData).length - 1
+        ]?.price
+      : null;
+
+    const currentPrice = latestHistoricalPrice || data[0].price;
+    const highestPrediction = Math.max(...data.map((item) => item.price));
+    const averagePrediction =
+      data.reduce((sum, item) => sum + item.price, 0) / data.length;
+
+    const potentialGrowth = currentPrice
+      ? ((highestPrediction - currentPrice) / currentPrice) * 100
+      : 0;
+
+    const futurePredictions = data.filter(
+      (item) => new Date(item.date) > today,
+    );
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="space-y-8"
+      >
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Price Forecast
+          </h3>
+
+          <div className="flex items-center justify-center mb-5">
+            <div className="flex items-center mr-6">
+              <div className="h-3 w-8 rounded-full bg-gradient-to-r from-[rgb(75,192,192)] to-[rgb(75,192,192,0.5)] mr-2"></div>
+              <span className="text-sm text-gray-300">Historical Data</span>
+            </div>
+            <div className="flex items-center">
+              <div className="h-3 w-8 rounded-full bg-gradient-to-r from-[rgb(255,159,64)] to-[rgb(255,159,64,0.5)] mr-2"></div>
+              <span className="text-sm text-gray-300">Predicted Data</span>
+            </div>
+          </div>
+
+          <div className="h-96 pb-4">
+            <Line data={formattedData} options={chartOptions} />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50 shadow-lg"
+          >
+            <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-2">
+              Current Price
+            </h3>
+            <p className="text-2xl font-bold text-blue-400">
+              $
+              {currentPrice.toLocaleString("en-US", {
+                maximumFractionDigits: 2,
+              })}
+            </p>
+          </motion.div>
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50 shadow-lg"
+          >
+            <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-2">
+              Highest Prediction
+            </h3>
+            <p className="text-2xl font-bold text-green-400">
+              $
+              {highestPrediction.toLocaleString("en-US", {
+                maximumFractionDigits: 2,
+              })}
+            </p>
+          </motion.div>
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50 shadow-lg"
+          >
+            <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-2">
+              Average Prediction
+            </h3>
+            <p className="text-2xl font-bold text-yellow-400">
+              $
+              {averagePrediction.toLocaleString("en-US", {
+                maximumFractionDigits: 2,
+              })}
+            </p>
+          </motion.div>
+          <motion.div
+            whileHover={{ scale: 1.02 }}
+            className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50 shadow-lg"
+          >
+            <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-2">
+              Potential Growth
+            </h3>
+            <p className="text-2xl font-bold text-green-400">
+              +{potentialGrowth.toFixed(2)}%
+            </p>
+          </motion.div>
+        </div>
+
+        <div className="bg-gray-800/80 p-5 rounded-lg border border-gray-700/50">
+          <h3 className="text-xl font-semibold text-gray-200 mb-4">
+            Future Price Predictions
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs uppercase text-gray-400 border-b border-gray-700">
+                <tr>
+                  <th scope="col" className="py-3 px-4">
+                    Date
+                  </th>
+                  <th scope="col" className="py-3 px-4">
+                    Predicted Price
+                  </th>
+                  <th scope="col" className="py-3 px-4">
+                    Change from Current
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {futurePredictions.map((item, index) => {
+                  const date = new Date(item.date);
+                  const changePercent = currentPrice
+                    ? ((item.price - currentPrice) / currentPrice) * 100
+                    : 0;
+
+                  return (
+                    <tr
+                      key={index}
+                      className={`border-b border-gray-800 hover:bg-gray-700/20 transition-colors ${
+                        index % 2 === 0 ? "bg-gray-800/30" : ""
+                      }`}
+                    >
+                      <td className="py-3 px-4 font-medium">
+                        {date.toLocaleDateString("en-US", {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        $
+                        {item.price.toLocaleString("en-US", {
+                          maximumFractionDigits: 2,
+                        })}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span
+                          className={`font-medium px-2 py-1 rounded ${changePercent >= 0 ? "text-green-400 bg-green-900/20" : "text-red-400 bg-red-900/20"}`}
+                        >
+                          {changePercent >= 0 ? "+" : ""}
+                          {changePercent.toFixed(2)}%
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </motion.div>
     );
   };
@@ -896,8 +1761,10 @@ export default function Home() {
         return <ArticlesContent />;
       case "Summary":
         return <SummaryContent />;
-      case "CoinMarketCap":
-        return <CoinMarketCapContent />;
+      case "Technical Indicators":
+        return <TechnicalIndicatorsContent />;
+      case "Prediction":
+        return <PredictionContent />;
       default:
         return <div>Select a tab to view data</div>;
     }
@@ -1027,7 +1894,8 @@ export default function Home() {
                 "Youtube",
                 "Reddit",
                 "Articles",
-                "CoinMarketCap",
+                "Technical Indicators",
+                "Prediction",
               ].map((tab) => (
                 <motion.button
                   key={tab}
