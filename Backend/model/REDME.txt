@@ -1,0 +1,2 @@
+Download Model Files to this directory
+https://huggingface.co/ProsusAI/finbert
